@@ -1,7 +1,7 @@
 // Client-side biomarker extraction using Gemini API directly
 // For prototype only — in production, move to a Supabase Edge Function
 
-const GEMINI_API_KEY = 'AIzaSyDzCOhu4yd_oHWv4q5dMU7Je6iDOHZaMBg';
+const GEMINI_API_KEY = 'AIzaSyCnhR1v45eL6K1zIZRofuPVzT_ko3_LyZE';
 
 const EXTRACTION_PROMPT = `You are a medical data extraction system. Extract ALL blood test results from this UK lab report.
 Return JSON only:
@@ -42,7 +42,7 @@ export async function extractBiomarkersFromFile(file: File): Promise<{
   else if (file.type === 'application/pdf') mimeType = 'application/pdf';
 
   // Call Gemini API
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${GEMINI_API_KEY}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
   const response = await fetch(geminiUrl, {
     method: 'POST',

@@ -7,7 +7,7 @@ const SUPABASE_SERVICE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVjc3BveHBwY3RsbXRiY2h4aXBpIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NDk4OTExNiwiZXhwIjoyMDkwNTY1MTE2fQ.0ImC_6uKzKwuHYZQxHtKJfANjqCF5QhTGNA4BNdskHA";
 const GEMINI_API_KEY =
-  process.env.GEMINI_API_KEY || "AIzaSyDzCOhu4yd_oHWv4q5dMU7Je6iDOHZaMBg";
+  process.env.GEMINI_API_KEY || "AIzaSyCnhR1v45eL6K1zIZRofuPVzT_ko3_LyZE";
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
@@ -70,7 +70,7 @@ export async function registerRoutes(
       else if (ext === "png") mimeType = "image/png";
 
       // Step 2: Call Gemini API
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${GEMINI_API_KEY}`;
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
       const geminiResponse = await fetch(geminiUrl, {
         method: "POST",
