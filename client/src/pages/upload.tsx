@@ -2,9 +2,8 @@ import { useState, useCallback, useRef } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import { apiRequest } from "@/lib/queryClient";
+import { extractBiomarkersFromFile } from "@/lib/extract";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -12,8 +11,6 @@ import {
   FileText,
   Loader2,
   User,
-  Calendar,
-  Mail,
   CheckCircle2,
 } from "lucide-react";
 
@@ -39,30 +36,28 @@ export default function UploadPage() {
     },
   });
 
+  // Fetch biomarker config for RAG classification
+  const { data: biomarkerConfig } = useQuery({
+    queryKey: ["biomarker-config"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("biomarker_config")
+        .select("*");
+      if (error) return [];
+      return data || [];
+    },
+  });
+
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
       setIsProcessing(true);
 
-      // Step 1: Upload to Supabase Storage
-      setProcessingStep("Uploading file...");
-      const fileName = `${Date.now()}-${file.name}`;
-      const filePath = `uploads/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from("lab-reports")
-        .upload(filePath, file);
-
-      if (uploadError) {
-        throw new Error(`Upload failed: ${uploadError.message}`);
-      }
-
-      // Step 2: Create lab_reports row
+      // Step 1: Create lab_reports row first
       setProcessingStep("Creating report record...");
       const { data: report, error: insertError } = await supabase
         .from("lab_reports")
         .insert({
-          patient_id: patient?.id || 1,
-          file_path: filePath,
+          patient_id: patient?.id || "00000000-0000-0000-0000-000000000001",
           file_name: file.name,
           extraction_status: "processing",
         })
@@ -70,18 +65,109 @@ export default function UploadPage() {
         .single();
 
       if (insertError) {
-        throw new Error(`Insert failed: ${insertError.message}`);
+        throw new Error(`Upload failed: ${insertError.message}`);
       }
 
-      // Step 3: Call server to extract biomarkers
-      setProcessingStep("Extracting biomarkers...");
-      const response = await apiRequest("POST", "/api/extract-biomarkers", {
-        reportId: report.id,
-        filePath: filePath,
-      });
+      // Step 2: Extract biomarkers using Gemini (client-side)
+      setProcessingStep("Extracting biomarkers with AI...");
+      let extractedData;
+      try {
+        extractedData = await extractBiomarkersFromFile(file);
+      } catch (err: any) {
+        // Update status to failed
+        await supabase
+          .from("lab_reports")
+          .update({ extraction_status: "failed" })
+          .eq("id", report.id);
+        throw new Error(`Extraction failed: ${err.message}`);
+      }
 
-      const result = await response.json();
-      return { reportId: report.id, ...result };
+      // Step 3: Classify biomarkers against config
+      setProcessingStep("Classifying results...");
+      const configMap = new Map<string, any>();
+      if (biomarkerConfig) {
+        for (const c of biomarkerConfig) {
+          if (c.abbreviation) configMap.set(c.abbreviation.toLowerCase(), c);
+          if (c.biomarker_name) configMap.set(c.biomarker_name.toLowerCase(), c);
+        }
+      }
+
+      const biomarkers = extractedData.biomarkers || [];
+      const results = [];
+
+      for (const bm of biomarkers) {
+        const config =
+          configMap.get((bm.abbreviation || "").toLowerCase()) ||
+          configMap.get((bm.name || "").toLowerCase());
+
+        let status = "normal";
+        if (config && bm.value !== null && bm.value !== undefined) {
+          if (
+            config.critical_low !== null &&
+            config.critical_high !== null &&
+            (bm.value < config.critical_low || bm.value > config.critical_high)
+          ) {
+            status = "critical";
+          } else if (
+            config.borderline_low !== null &&
+            config.borderline_high !== null &&
+            (bm.value < config.borderline_low || bm.value > config.borderline_high)
+          ) {
+            status = "borderline";
+          } else if (
+            config.optimal_low !== null &&
+            config.optimal_high !== null &&
+            bm.value >= config.optimal_low &&
+            bm.value <= config.optimal_high
+          ) {
+            status = "normal";
+          } else if (bm.flag === "H" || bm.flag === "L") {
+            status = "borderline";
+          }
+        } else if (bm.flag === "H" || bm.flag === "L") {
+          status = "borderline";
+        }
+
+        results.push({
+          report_id: report.id,
+          biomarker_name: bm.name,
+          abbreviation: bm.abbreviation || null,
+          value: bm.value ?? null,
+          text_value: bm.text_value || null,
+          unit: bm.unit || null,
+          reference_range_low: bm.reference_range_low ?? null,
+          reference_range_high: bm.reference_range_high ?? null,
+          flag: bm.flag || null,
+          category: bm.category || config?.category || null,
+          status: status,
+          confidence: bm.confidence ?? null,
+        });
+      }
+
+      // Step 4: Batch insert biomarker results
+      setProcessingStep("Saving results...");
+      if (results.length > 0) {
+        const { error: bmInsertError } = await supabase
+          .from("biomarker_results")
+          .insert(results);
+
+        if (bmInsertError) {
+          console.error("Biomarker insert error:", bmInsertError);
+        }
+      }
+
+      // Step 5: Update lab_reports with extraction data
+      await supabase
+        .from("lab_reports")
+        .update({
+          extraction_status: "completed",
+          lab_name: extractedData.lab_name || null,
+          report_date: extractedData.report_date || null,
+          raw_extraction: JSON.stringify(extractedData),
+        })
+        .eq("id", report.id);
+
+      return { reportId: report.id, biomarkerCount: results.length };
     },
     onSuccess: (data) => {
       setIsProcessing(false);
@@ -263,22 +349,8 @@ export default function UploadPage() {
                   </div>
                   <div>
                     <p className="font-semibold text-sm text-foreground" data-testid="text-patient-name">
-                      {patient.full_name}
+                      {patient.full_name || patient.name}
                     </p>
-                    <div className="flex items-center gap-4 mt-1.5">
-                      {patient.date_of_birth && (
-                        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Calendar className="w-3.5 h-3.5" />
-                          {patient.date_of_birth}
-                        </span>
-                      )}
-                      {patient.email && (
-                        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Mail className="w-3.5 h-3.5" />
-                          {patient.email}
-                        </span>
-                      )}
-                    </div>
                   </div>
                 </div>
                 <Badge variant="secondary" className="text-xs">
